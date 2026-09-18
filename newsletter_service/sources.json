@@ -1,0 +1,22 @@
+[
+  {
+    "name": "The Hindu (Tech)",
+    "url": "https://www.thehindu.com/sci-tech/technology/feeder/default.rss"
+  },
+  {
+    "name": "Times of India (Tech)",
+    "url": "https://timesofindia.indiatimes.com/rssfeeds/66949542.cms"
+  },
+  {
+    "name": "Daily Thanthi (Tamil)",
+    "url": "https://news.google.com/rss/search?q=site:dailythanthi.com&hl=ta&gl=IN&ceid=IN:ta"
+  },
+  {
+    "name": "Dinamani (Tamil)",
+    "url": "https://www.dinamani.com/tamilnadu/rss/"
+  },
+  {
+    "name": "The Verge (Tech)",
+    "url": "https://www.theverge.com/rss/index.xml"
+  }
+]
