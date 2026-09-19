@@ -4,21 +4,26 @@ import warnings
 import time
 import sys
 import re
-from dotenv import load_dotenv
+from datetime import datetime
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from youtube_transcript_api.formatters import SRTFormatter
-import google.generativeai as genai
+import base64
+from dotenv import load_dotenv
+# pyrefly: ignore [missing-import]
+from apscheduler.schedulers.blocking import BlockingScheduler
 
-# Load environment variables from .env file
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
+load_dotenv()
 
 # Reconfigure stdout to support printing emojis and unicode characters on Windows
 sys.stdout.reconfigure(encoding='utf-8')
 warnings.filterwarnings("ignore")
 
-API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
-CHANNELS = ["Almost Everything"]
+API_KEY = os.environ.get("YOUTUBE_API_KEY")
+CHANNELS = ["Mic Story"]
 BASE_URL = "https://www.googleapis.com/youtube/v3"
+# Configurable backend URL: set BACKEND_URL env var for deployed backends,
+# falls back to localhost for local development
+BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
 
 def find_channel(channel_name):
     """Find a YouTube channel by name."""
@@ -157,7 +162,12 @@ def get_latest_long_video_id(playlist_id):
             print("URL       :", video_url)
             print("-" * 60)
             
-            return video_id
+            return {
+                "video_id": video_id,
+                "title": title,
+                "published_at": published,
+                "url": video_url
+            }
 
     print("No long videos found in recent uploads.")
     return None
@@ -166,11 +176,12 @@ def download_audio(video_id, output_path="audio.m4a"):
     print(f"Downloading audio for video {video_id} using yt-dlp...")
     import yt_dlp
     ydl_opts = {
-        'format': 'm4a/bestaudio/best',
+        'format': 'worstaudio[ext=m4a]/worstaudio/bestaudio',
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
-        'extractor_args': {'youtube': ['player_client=ANDROID']}
+        'extractor_args': {'youtube': ['player_client=ANDROID,WEB']},
+        'http_headers': {'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'}
     }
     if os.path.exists(output_path):
         os.remove(output_path)
@@ -178,99 +189,58 @@ def download_audio(video_id, output_path="audio.m4a"):
         ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
     return output_path
 
-def run_gemini_translation(audio_path):
-    print("Uploading audio to Gemini for translation...")
+def run_groq_translation(audio_path):
+    print("Uploading audio to Groq (Whisper Large v3) for translation...")
     
-    api_keys = [
-        os.environ.get("GEMINI_API_KEY", ""),
-        os.environ.get("GEMINI_API_KEY_2", "")
-    ]
-    api_keys = [k for k in api_keys if k]  # filter out empty keys
+    api_key = os.environ.get("GROQ_API_KEY")
     
-    from google import genai
-    from google.genai import types
-    prompt = "Listen to this audio. Transcribe and translate it into natural English. Return ONLY the final English translation text, with proper punctuation and formatting."
-    result = ""
-    
-    # Configure safety settings to prevent false positive blocks
-    config = types.GenerateContentConfig(
-        safety_settings=[
-            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE)
-        ]
-    )
-    
-    for key_idx, current_key in enumerate(api_keys):
-        print(f"Trying API Key {key_idx + 1}/{len(api_keys)}...")
-        try:
-            client = genai.Client(api_key=current_key)
+    with open(audio_path, "rb") as f:
+        headers = {
+            "Authorization": f"Bearer {api_key}"
+        }
+        files = {
+            "file": (os.path.basename(audio_path), f, "audio/m4a")
+        }
+        data = {
+            "model": "whisper-large-v3",
+            "response_format": "text"
+        }
+        
+        response = requests.post("https://api.groq.com/openai/v1/audio/translations", headers=headers, files=files, data=data)
+        
+        if response.status_code != 200:
+            print("Groq API Error Response:", response.text)
             
-            audio_file = client.files.upload(file=audio_path)
-            
-            print("Waiting for Google servers to process the audio file...")
-            while audio_file.state.name == "PROCESSING":
-                print(".", end="", flush=True)
-                time.sleep(5)
-                audio_file = client.files.get(name=audio_file.name)
-                
-            print()
-            if audio_file.state.name == "FAILED":
-                raise ValueError("Audio file processing failed on Gemini servers.")
-                
-            print("Prompting Gemini to translate the audio to English...")
-            
-            max_retries = 5
-            success = False
-            for attempt in range(max_retries):
-                try:
-                    response = client.models.generate_content(
-                        model='gemini-3.8-flash',
-                        contents=[prompt, audio_file],
-                        config=config
-                    )
-                    result = response.text.strip() if response.text else ""
-                    if not result and response.candidates and response.candidates[0].content.parts:
-                        for part in response.candidates[0].content.parts:
-                            if hasattr(part, 'text') and part.text:
-                                result += part.text
-                            elif hasattr(part, 'audio_transcription') and hasattr(part.audio_transcription, 'text'):
-                                result += part.audio_transcription.text
-                        result = result.strip()
-                    if not result:
-                        print("DEBUG: Result is empty. Response Candidates:")
-                        print(response.candidates)
-                    print("Translation complete!")
-                    success = True
-                    break
-                except Exception as e:
-                    error_msg = str(e)
-                    if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                        print(f"Rate limit exceeded on this API key: {e}")
-                        break 
-                        
-                    if attempt < max_retries - 1:
-                        print(f"Error during Gemini generation: {e}. Retrying in 20 seconds... (Attempt {attempt+1}/{max_retries})")
-                        time.sleep(20)
-                    else:
-                        print(f"Gemini generation failed after {max_retries} retries: {e}")
-                        
-            try:
-                client.files.delete(name=audio_file.name)
-            except Exception as e:
-                print(f"Failed to delete remote file: {e}")
-                
-            if success:
-                return result
-                
-        except Exception as e:
-            print(f"Error with API Key {key_idx + 1}: {e}")
-            
-    print("All API keys failed or exhausted.")
-    return result
+        response.raise_for_status()
+        
+        result = response.text.strip()
+        print("Translation complete!")
+        return result
 
-def process_video(video_id):
+def send_to_backend(video_data, channel_name, plain_text):
+    import datetime
+    try:
+        print("\nSending extracted text to FeedRead backend...")
+        payload = {
+            "source_type": "youtube",
+            "source_name": channel_name,
+            "source_url": video_data["url"],
+            "title": video_data["title"],
+            "content": plain_text,
+            "published_at": video_data["published_at"],
+            "fetched_at": datetime.datetime.utcnow().isoformat() + "Z"
+        }
+        res = requests.post(f"{BACKEND_URL}/ingest", json=payload, timeout=60)
+        print(f"Backend response: {res.status_code}")
+        try:
+            print(res.json())
+        except:
+            print(res.text)
+    except Exception as e:
+        print(f"Failed to send to backend: {e}")
+
+def process_video(video_data, channel_name):
+    video_id = video_data["video_id"]
     print(f"\n============================================================")
     print(f"Processing Video ID: {video_id}")
     print(f"============================================================")
@@ -313,19 +283,20 @@ def process_video(video_id):
         print("\nFiles created successfully:")
         print(f"{video_id}.srt")
         print(f"{video_id}.txt")
+        send_to_backend(video_data, channel_name, plain_text)
         return
         
     except Exception as e:
         print(f"No English transcript found: {e}")
         
-    print("\nFalling back to Gemini Audio translation...")
+    print("\nFalling back to Groq Audio translation...")
     audio_file = f"{video_id}_audio.m4a"
     download_audio(video_id, audio_file)
     
-    plain_text = run_gemini_translation(audio_file)
+    plain_text = run_groq_translation(audio_file)
     
     if not plain_text.strip():
-        print("WARNING: Gemini returned empty translation!")
+        print("WARNING: Groq returned empty translation!")
         
     if os.path.exists(audio_file):
         os.remove(audio_file)
@@ -335,10 +306,56 @@ def process_video(video_id):
         
     print(f"\nFile created successfully:")
     print(f"{video_id}.txt")
+    send_to_backend(video_data, channel_name, plain_text)
 
-def main():
-    if API_KEY == "PASTE_YOUR_API_KEY_HERE":
-        print("ERROR: Please add your YouTube API key.")
+def ensure_backend_running():
+    # If a remote backend URL is configured, skip auto-start
+    if BACKEND_URL != "http://localhost:8000":
+        print(f"Using remote backend: {BACKEND_URL}")
+        return
+    try:
+        res = requests.get(f"{BACKEND_URL}/health", timeout=2)
+        if res.status_code == 200:
+            return
+    except requests.exceptions.ConnectionError:
+        pass
+
+    print("Backend server not running. Starting it automatically...")
+    
+    import subprocess
+    backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    
+    subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "main:app", "--port", "8000"],
+        cwd=backend_dir,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+    )
+    
+    # Wait for the server to spin up
+    for _ in range(15):
+        time.sleep(1)
+        try:
+            res = requests.get("http://localhost:8000/health", timeout=1)
+            if res.status_code == 200:
+                print("Backend server started successfully.")
+                return
+        except requests.exceptions.ConnectionError:
+            pass
+            
+    print("WARNING: Could not verify if backend server started correctly.")
+
+def run_pipeline():
+    """Run the full YouTube extraction pipeline for all channels."""
+    print(f"\n{'='*60}")
+    print(f"Pipeline started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}")
+
+    ensure_backend_running()
+    
+    if not API_KEY:
+        print("ERROR: YOUTUBE_API_KEY not set in .env")
         return
 
     print("FeedToRead YouTube Pipeline")
@@ -357,10 +374,34 @@ def main():
         if not playlist_id:
             continue
 
-        video_id = get_latest_long_video_id(playlist_id)
-        if video_id:
+        video_data = get_latest_long_video_id(playlist_id)
+        if video_data:
+            video_id = video_data["video_id"]
             print(f"\nSuccessfully retrieved long video ID: {video_id} for {channel_name}")
-            process_video(video_id)
+            process_video(video_data, channel_name)
+
+    print(f"\nPipeline finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == "__main__":
-    main()
+    # Run immediately on startup so you don't have to wait for 8:30 AM
+    print("Running pipeline immediately on startup...")
+    run_pipeline()
+
+    # Schedule to run every day at 8:30 AM
+    scheduler = BlockingScheduler()
+    scheduler.add_job(
+        run_pipeline,
+        trigger='cron',
+        hour=8,
+        minute=30,
+        id='daily_youtube_pipeline'
+    )
+
+    print("\nScheduler started. Pipeline will run daily at 08:30 AM.")
+    print("Press Ctrl+C to stop.")
+
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        print("\nScheduler stopped.")
+        scheduler.shutdown()
