@@ -183,10 +183,25 @@ def download_audio(video_id, output_path="audio.m4a"):
         'extractor_args': {'youtube': ['player_client=ANDROID,WEB']},
         'http_headers': {'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'}
     }
+    
+    # Handle cookies if provided via environment variable
+    cookies_str = os.environ.get("YOUTUBE_COOKIES")
+    cookie_file = None
+    if cookies_str:
+        cookie_file = "youtube_cookies.txt"
+        with open(cookie_file, "w") as f:
+            f.write(cookies_str)
+        ydl_opts['cookiefile'] = cookie_file
+
     if os.path.exists(output_path):
         os.remove(output_path)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+        
+    # Clean up the temporary cookie file
+    if cookie_file and os.path.exists(cookie_file):
+        os.remove(cookie_file)
+        
     return output_path
 
 def run_groq_translation(audio_path):

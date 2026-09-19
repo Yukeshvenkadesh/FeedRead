@@ -31,5 +31,6 @@ jobs:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
         working-directory: content_Extraction_youtube
         run: python main_once.py
