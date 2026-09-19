@@ -1,5 +1,5 @@
 youtube-transcript-api==1.2.4
-yt-dlp==2026.8.19
+yt-dlp[default]@git+https://github.com/yt-dlp/yt-dlp.git@master
 requests==2.34.2
 python-dotenv==1.1.1
 APScheduler==3.11.3

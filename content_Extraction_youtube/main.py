@@ -180,7 +180,7 @@ def download_audio(video_id, output_path="audio.m4a"):
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
-        'extractor_args': {'youtube': ['player_client=ANDROID,WEB']},
+        'extractor_args': {'youtube': ['player_client=IOS,WEB']},
         'http_headers': {'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'}
     }
     
