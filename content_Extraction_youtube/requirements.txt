@@ -1,5 +1,6 @@
 youtube-transcript-api==1.2.4
-yt-dlp[default]@git+https://github.com/yt-dlp/yt-dlp.git@master
+pytubefix==11.1.0
+nodejs-wheel-binaries==24.19.0
 requests==2.34.2
 python-dotenv==1.1.1
 APScheduler==3.11.3

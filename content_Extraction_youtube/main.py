@@ -173,35 +173,16 @@ def get_latest_long_video_id(playlist_id):
     return None
 
 def download_audio(video_id, output_path="audio.m4a"):
-    print(f"Downloading audio for video {video_id} using yt-dlp...")
-    import yt_dlp
-    ydl_opts = {
-        'format': 'worstaudio[ext=m4a]/worstaudio/bestaudio',
-        'outtmpl': output_path,
-        'quiet': True,
-        'no_warnings': True,
-        'extractor_args': {'youtube': ['player_client=IOS,WEB']},
-        'http_headers': {'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'}
-    }
+    print(f"Downloading audio for video {video_id} using pytubefix...")
+    from pytubefix import YouTube
     
-    # Handle cookies if provided via environment variable
-    cookies_str = os.environ.get("YOUTUBE_COOKIES")
-    cookie_file = None
-    if cookies_str:
-        cookie_file = "youtube_cookies.txt"
-        with open(cookie_file, "w") as f:
-            f.write(cookies_str)
-        ydl_opts['cookiefile'] = cookie_file
-
     if os.path.exists(output_path):
         os.remove(output_path)
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
         
-    # Clean up the temporary cookie file
-    if cookie_file and os.path.exists(cookie_file):
-        os.remove(cookie_file)
-        
+    yt = YouTube(f'https://www.youtube.com/watch?v={video_id}')
+    audio_stream = yt.streams.get_audio_only()
+    audio_stream.download(filename=output_path)
+    
     return output_path
 
 def run_groq_translation(audio_path):
