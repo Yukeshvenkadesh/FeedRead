@@ -1,118 +1,96 @@
 import express from 'express';
 import Source from '../models/Source.js';
-import { protect } from '../middleware/auth.js';
+import { verifyToken } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// All source routes are protected by JWT verification middleware
-router.use(protect);
-
-// 1. GET /api/sources (Read)
-// Fetch all sources where userId === req.user.id, sorted by createdAt: -1.
-// Return HTTP 200 with the array of source documents.
-router.get('/', async (req, res) => {
+// GET /api/sources/active-targets -> For teammate's pipeline to retrieve channels to scrape
+router.get('/active-targets', async (req, res) => {
   try {
-    const sources = await Source.find({ userId: req.user.id }).sort({ createdAt: -1 });
-    return res.status(200).json(sources);
-  } catch (error) {
-    console.error('Get Sources Error:', error);
-    return res.status(500).json({ message: error.message });
+    const { type } = req.query; // e.g. ?type=YOUTUBE
+    const filter = { isActive: true };
+    if (type) filter.sourceType = type.toUpperCase();
+
+    const targets = await Source.aggregate([
+      { $match: filter },
+      { $group: { _id: { name: "$sourceName", type: "$sourceType" }, subscribersCount: { $sum: 1 } } },
+      { $project: { _id: 0, sourceName: "$_id.name", sourceType: "$_id.type", subscribersCount: 1 } }
+    ]);
+
+    return res.json({ targets });
+  } catch (err) {
+    console.error("Failed to fetch active targets:", err);
+    return res.status(500).json({ error: 'Failed to fetch targets for scraper' });
   }
 });
 
-// 2. POST /api/sources (Create)
-// Accept { name, type, url } in req.body.
-// Upsert or create: If a source with the same name exists for this user, activate it; otherwise, insert a new Source document.
-// Return HTTP 201 with the created/updated source.
-router.post('/', async (req, res) => {
+// GET /api/sources -> Fetch saved sources for the logged-in user session
+router.get('/', verifyToken, async (req, res) => {
   try {
-    const name = (req.body.name || req.body.sourceName || '').trim();
-    const type = req.body.type || req.body.sourceType || 'BLOG';
-    const url = (req.body.url || req.body.sourceUrl || '').trim();
-
-    if (!name) {
-      return res.status(400).json({ message: 'Source name is required' });
-    }
-
-    // Check if source with the same name exists for this user (case-insensitive)
-    const existingSource = await Source.findOne({
-      userId: req.user.id,
-      $or: [
-        { name: { $regex: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } },
-        { sourceName: { $regex: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } }
-      ]
-    });
-
-    if (existingSource) {
-      existingSource.isActive = true;
-      if (type) {
-        existingSource.type = type;
-        existingSource.sourceType = type;
-      }
-      if (url) existingSource.url = url;
-      await existingSource.save();
-      return res.status(201).json(existingSource);
-    }
-
-    const newSource = await Source.create({
-      userId: req.user.id,
-      name,
-      sourceName: name,
-      type,
-      sourceType: type,
-      url,
-      isActive: true
-    });
-
-    return res.status(201).json(newSource);
-  } catch (error) {
-    console.error('Add/Upsert Source Error:', error);
-    return res.status(500).json({ message: error.message });
+    const sources = await Source.find({ userId: req.user.id }).sort({ addedAt: -1 });
+    return res.json({ sources: sources || [] });
+  } catch (err) {
+    console.error("Failed to fetch sources:", err);
+    return res.status(500).json({ error: 'Failed to fetch wire sources' });
   }
 });
 
-// 3. PATCH /api/sources/:id/toggle (Update)
-// Toggle the isActive boolean flag for _id === req.params.id and userId === req.user.id.
-// Return HTTP 200 with the updated document.
-router.patch('/:id/toggle', async (req, res) => {
+// POST /api/sources -> Add a new wire source from the form (e.g., madan gowri / YOUTUBE)
+router.post('/', verifyToken, async (req, res) => {
   try {
-    const source = await Source.findOne({
-      _id: req.params.id,
-      userId: req.user.id
-    });
+    const { sourceName, sourceType, name, type } = req.body;
+    const rawName = sourceName || name;
+    const rawType = sourceType || type;
 
-    if (!source) {
-      return res.status(404).json({ message: 'Source not found' });
+    if (!rawName || !rawType) {
+      return res.status(400).json({ error: 'sourceName and sourceType are required' });
     }
 
+    const cleanName = rawName.trim();
+    let cleanType = rawType.toUpperCase();
+    if (cleanType.includes('YOUTUBE')) cleanType = 'YOUTUBE';
+    else if (cleanType.includes('BLOG')) cleanType = 'BLOG';
+    else if (cleanType.includes('NEWSLETTER')) cleanType = 'NEWSLETTER';
+    else if (cleanType.includes('RSS')) cleanType = 'RSS';
+
+    const source = await Source.findOneAndUpdate(
+      { userId: req.user.id, sourceName: cleanName },
+      { userId: req.user.id, sourceName: cleanName, sourceType: cleanType, isActive: true },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return res.status(201).json({ source });
+  } catch (err) {
+    console.error("Error saving source:", err);
+    return res.status(500).json({ error: 'Failed to persist source to database' });
+  }
+});
+
+// PATCH /api/sources/:id/toggle -> Toggle active status
+router.patch('/:id/toggle', verifyToken, async (req, res) => {
+  try {
+    const source = await Source.findOne({ _id: req.params.id, userId: req.user.id });
+    if (!source) return res.status(404).json({ error: 'Source not found' });
+    
     source.isActive = !source.isActive;
     await source.save();
 
-    return res.status(200).json(source);
-  } catch (error) {
-    console.error('Toggle Source Error:', error);
-    return res.status(500).json({ message: error.message });
+    return res.json({ source });
+  } catch (err) {
+    console.error("Error toggling source:", err);
+    return res.status(500).json({ error: 'Failed to toggle source' });
   }
 });
 
-// 4. DELETE /api/sources/:id (Delete)
-// Remove document matching _id === req.params.id and userId === req.user.id.
-// Return HTTP 200 with { message: "Source deleted successfully" }.
-router.delete('/:id', async (req, res) => {
+// DELETE /api/sources/:id -> Unsubscribe / remove a wire source
+router.delete('/:id', verifyToken, async (req, res) => {
   try {
-    const source = await Source.findOneAndDelete({
-      _id: req.params.id,
-      userId: req.user.id
-    });
-
-    if (!source) {
-      return res.status(404).json({ message: 'Source not found' });
-    }
-
-    return res.status(200).json({ message: 'Source deleted successfully' });
-  } catch (error) {
-    console.error('Delete Source Error:', error);
-    return res.status(500).json({ message: error.message });
+    const result = await Source.findOneAndDelete({ _id: req.params.id, userId: req.user.id });
+    if (!result) return res.status(404).json({ error: 'Source not found' });
+    return res.json({ message: 'Source deleted successfully' });
+  } catch (err) {
+    console.error("Error deleting source:", err);
+    return res.status(500).json({ error: 'Failed to delete source' });
   }
 });
 
