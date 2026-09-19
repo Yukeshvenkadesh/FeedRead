@@ -11,6 +11,8 @@ import base64
 from dotenv import load_dotenv
 # pyrefly: ignore [missing-import]
 from apscheduler.schedulers.blocking import BlockingScheduler
+# pyrefly: ignore [missing-import]
+from pytubefix import YouTube
 
 load_dotenv()
 
@@ -174,12 +176,11 @@ def get_latest_long_video_id(playlist_id):
 
 def download_audio(video_id, output_path="audio.m4a"):
     print(f"Downloading audio for video {video_id} using pytubefix...")
-    from pytubefix import YouTube
     
     if os.path.exists(output_path):
         os.remove(output_path)
         
-    yt = YouTube(f'https://www.youtube.com/watch?v={video_id}')
+    yt = YouTube(f'https://www.youtube.com/watch?v={video_id}', use_po_token=True)
     audio_stream = yt.streams.get_audio_only()
     audio_stream.download(filename=output_path)
     
